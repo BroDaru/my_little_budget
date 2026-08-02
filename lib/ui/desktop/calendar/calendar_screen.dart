@@ -80,19 +80,32 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
                     noteEntries,
                     holidays,
                   );
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        flex: 3,
-                        child: _CalendarGrid(month: _month, entries: entries),
-                      ),
-                      const SizedBox(width: 16),
-                      SizedBox(
-                        width: 360,
-                        child: _AgendaList(month: _month, entries: entries),
-                      ),
-                    ],
+                  return LayoutBuilder(
+                    builder: (context, constraints) {
+                      final showAgenda = constraints.maxWidth >= 1200;
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            flex: 3,
+                            child: _CalendarGrid(
+                              month: _month,
+                              entries: entries,
+                            ),
+                          ),
+                          if (showAgenda) ...[
+                            const SizedBox(width: 16),
+                            SizedBox(
+                              width: 360,
+                              child: _AgendaList(
+                                month: _month,
+                                entries: entries,
+                              ),
+                            ),
+                          ],
+                        ],
+                      );
+                    },
                   );
                 },
               );

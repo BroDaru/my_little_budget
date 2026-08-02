@@ -12,6 +12,7 @@ import 'package:my_little_budget/data/providers.dart';
 import 'package:my_little_budget/data/supabase_backup_settings.dart';
 import 'package:my_little_budget/data/supabase_incremental_sync_service.dart';
 import 'package:my_little_budget/data/supabase_sync_coordinator.dart';
+import 'package:my_little_budget/data/supabase_operation_status.dart';
 import 'package:my_little_budget/data/sync_metadata.dart';
 import 'package:my_little_budget/data/sync_models.dart';
 
@@ -102,6 +103,32 @@ void main() {
     );
     expect(remote.fetchCount, greaterThan(1));
   });
+
+  test(
+    'records full sync and automatic upload results independently',
+    () async {
+      final db = await _openDatabase();
+      addTearDown(db.close);
+      await _markAllSyncedAndClearOutbox(db);
+      final recorder = _MemoryStatusRecorder();
+      final coordinator = _coordinator(
+        db,
+        _FailFirstFetchGateway(),
+        statusRecorder: recorder,
+        retryDelays: const [Duration(days: 1)],
+      );
+      addTearDown(coordinator.dispose);
+
+      final failedFullSync = await coordinator.synchronizeNow();
+      final successfulUpload = await coordinator.pushNow();
+
+      expect(failedFullSync.isOk, isFalse);
+      expect(successfulUpload.isOk, isTrue);
+      expect(recorder.fullResult?.isOk, isFalse);
+      expect(recorder.fullResult?.errorStage, 'download');
+      expect(recorder.autoResult?.isOk, isTrue);
+    },
+  );
 
   testWidgets(
     'actual initial route does not backfill before a successful startup pull',
@@ -256,6 +283,7 @@ SupabaseSyncCoordinator _coordinator(
   AppDatabase db,
   SupabaseSyncGateway remote, {
   List<Duration> retryDelays = const [Duration(milliseconds: 10)],
+  SupabaseSyncStatusRecorder? statusRecorder,
 }) {
   return SupabaseSyncCoordinator(
     database: db,
@@ -265,7 +293,37 @@ SupabaseSyncCoordinator _coordinator(
     ),
     loadSettings: () async => _settings,
     retryDelays: retryDelays,
+    statusRecorder: statusRecorder,
   );
+}
+
+class _MemoryStatusRecorder implements SupabaseSyncStatusRecorder {
+  SyncRunResult? fullResult;
+  SyncRunResult? autoResult;
+
+  @override
+  Future<void> recordAutoUploadResult(
+    SyncRunResult result, {
+    int? pendingUploadCount,
+    DateTime? now,
+  }) async {
+    autoResult = result;
+  }
+
+  @override
+  Future<void> recordAutoUploadStarted({DateTime? now}) async {}
+
+  @override
+  Future<void> recordFullSyncResult(
+    SyncRunResult result, {
+    int? pendingUploadCount,
+    DateTime? now,
+  }) async {
+    fullResult = result;
+  }
+
+  @override
+  Future<void> recordFullSyncStarted({DateTime? now}) async {}
 }
 
 Future<AppDatabase> _openDatabase() async {

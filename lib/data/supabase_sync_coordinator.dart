@@ -5,6 +5,7 @@ import 'package:drift/drift.dart';
 import 'database.dart';
 import 'supabase_backup_settings.dart';
 import 'supabase_incremental_sync_service.dart';
+import 'supabase_operation_status.dart';
 import 'sync_metadata.dart';
 import 'sync_models.dart';
 
@@ -26,16 +27,19 @@ class SupabaseSyncCoordinator {
     required AppDatabase database,
     required SupabaseIncrementalSyncService service,
     required SyncSettingsLoader loadSettings,
+    SupabaseSyncStatusRecorder? statusRecorder,
     List<Duration> retryDelays = _defaultRetryDelays,
   }) : _database = database,
        _service = service,
        _loadSettings = loadSettings,
+       _statusRecorder = statusRecorder,
        _retryDelays = retryDelays,
        assert(retryDelays.isNotEmpty);
 
   final AppDatabase _database;
   final SupabaseIncrementalSyncService _service;
   final SyncSettingsLoader _loadSettings;
+  final SupabaseSyncStatusRecorder? _statusRecorder;
   final List<Duration> _retryDelays;
 
   StreamSubscription<Set<TableUpdate>>? _updatesSubscription;
@@ -123,7 +127,11 @@ class SupabaseSyncCoordinator {
     try {
       return await _execute(fullSync: fullSync);
     } catch (error) {
-      final result = SyncRunResult(error: error.toString());
+      final result = SyncRunResult(
+        error: error.toString(),
+        errorStage: fullSync ? 'fullSync' : 'upload',
+      );
+      await _recordResult(fullSync: fullSync, result: result);
       _listener?.call(result);
       _retryFullSync = _retryFullSync || fullSync;
       _scheduleRetry();
@@ -138,9 +146,12 @@ class SupabaseSyncCoordinator {
       return const SyncRunResult();
     }
 
+    await _recordStarted(fullSync: fullSync);
+
     final result = fullSync
         ? await _service.synchronize(settings, onProgress: _emitProgress)
         : await _service.pushPending(settings);
+    await _recordResult(fullSync: fullSync, result: result);
     _listener?.call(result);
     if (result.isOk) {
       // A push-only success does not prove that a failed pull recovered.
@@ -153,6 +164,55 @@ class SupabaseSyncCoordinator {
       _scheduleRetry();
     }
     return result;
+  }
+
+  Future<void> _recordStarted({required bool fullSync}) async {
+    final recorder = _statusRecorder;
+    if (recorder == null) return;
+    try {
+      if (fullSync) {
+        await recorder.recordFullSyncStarted();
+      } else {
+        await recorder.recordAutoUploadStarted();
+      }
+    } catch (_) {
+      // Diagnostic persistence must never prevent synchronization.
+    }
+  }
+
+  Future<void> _recordResult({
+    required bool fullSync,
+    required SyncRunResult result,
+  }) async {
+    final recorder = _statusRecorder;
+    if (recorder == null) return;
+    final pendingUploadCount = await _pendingUploadCount();
+    try {
+      if (fullSync) {
+        await recorder.recordFullSyncResult(
+          result,
+          pendingUploadCount: pendingUploadCount,
+        );
+      } else {
+        await recorder.recordAutoUploadResult(
+          result,
+          pendingUploadCount: pendingUploadCount,
+        );
+      }
+    } catch (_) {
+      // Diagnostic persistence must never prevent synchronization.
+    }
+  }
+
+  Future<int?> _pendingUploadCount() async {
+    try {
+      final row = await _database
+          .customSelect('SELECT COUNT(*) AS count FROM sync_outbox')
+          .getSingle();
+      return row.read<int>('count');
+    } catch (_) {
+      return null;
+    }
   }
 
   void _emitProgress(SyncProgress progress) {

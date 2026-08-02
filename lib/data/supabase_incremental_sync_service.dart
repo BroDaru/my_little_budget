@@ -128,6 +128,7 @@ class SupabaseIncrementalSyncService {
 
     onProgress?.call(const SyncProgress(percent: 0, label: '동기화를 준비하고 있습니다.'));
     var downloaded = 0;
+    String? currentEntity;
     try {
       final bootstrap = await _local.prepareRemote(settings.normalized().url);
       onProgress?.call(
@@ -144,6 +145,7 @@ class SupabaseIncrementalSyncService {
         entityIndex++
       ) {
         final entity = syncPullOrder[entityIndex];
+        currentEntity = entity;
         var cursor = await _local.cursor(entity);
         while (true) {
           final rows = await _remote.fetchChanges(
@@ -207,6 +209,8 @@ class SupabaseIncrementalSyncService {
       return SyncRunResult(
         downloaded: downloaded,
         error: _describeError(error),
+        errorStage: 'download',
+        errorEntity: currentEntity,
       );
     }
 
@@ -219,6 +223,8 @@ class SupabaseIncrementalSyncService {
       uploaded: pushResult.uploaded,
       downloaded: downloaded,
       error: pushResult.error,
+      errorStage: pushResult.errorStage,
+      errorEntity: pushResult.errorEntity,
     );
   }
 
@@ -238,6 +244,7 @@ class SupabaseIncrementalSyncService {
     if (validationError != null) return SyncRunResult(error: validationError);
 
     var uploaded = 0;
+    String? currentEntity;
     try {
       var total = await _local.pendingEntryCount();
       var entries = await _local.pendingEntries(limit: uploadChunkSize);
@@ -252,6 +259,7 @@ class SupabaseIncrementalSyncService {
       var completed = 0;
       while (entries.isNotEmpty) {
         for (final entry in entries) {
+          currentEntity = entry.entity;
           final current = await _local.currentEntry(entry.entity, entry.uuid);
           if (current == null || current.generation != entry.generation) {
             completed++;
@@ -291,7 +299,12 @@ class SupabaseIncrementalSyncService {
       }
       return SyncRunResult(uploaded: uploaded);
     } catch (error) {
-      return SyncRunResult(uploaded: uploaded, error: _describeError(error));
+      return SyncRunResult(
+        uploaded: uploaded,
+        error: _describeError(error),
+        errorStage: 'upload',
+        errorEntity: currentEntity,
+      );
     }
   }
 

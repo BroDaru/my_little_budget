@@ -37,11 +37,19 @@ class SyncOutboxEntry {
 }
 
 class SyncRunResult {
-  const SyncRunResult({this.uploaded = 0, this.downloaded = 0, this.error});
+  const SyncRunResult({
+    this.uploaded = 0,
+    this.downloaded = 0,
+    this.error,
+    this.errorStage,
+    this.errorEntity,
+  });
 
   final int uploaded;
   final int downloaded;
   final String? error;
+  final String? errorStage;
+  final String? errorEntity;
 
   bool get isOk => error == null;
   bool get changedLocalData => downloaded > 0;

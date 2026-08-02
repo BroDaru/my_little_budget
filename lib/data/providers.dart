@@ -17,6 +17,7 @@ import 'local_sync_store.dart';
 import 'supabase_incremental_sync_service.dart';
 import 'supabase_backup_settings.dart';
 import 'supabase_sync_coordinator.dart';
+import 'supabase_operation_status.dart';
 
 /// 앱 전역 단일 DB 인스턴스. 첫 쿼리 시 lazy open → 시드(beforeOpen).
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
@@ -44,6 +45,7 @@ final supabaseSyncCoordinatorProvider = Provider<SupabaseSyncCoordinator>((
       await notifier.whenReady;
       return ref.read(supabaseBackupSettingsProvider);
     },
+    statusRecorder: ref.watch(supabaseOperationStatusProvider.notifier),
   );
   ref.onDispose(coordinator.dispose);
   return coordinator;

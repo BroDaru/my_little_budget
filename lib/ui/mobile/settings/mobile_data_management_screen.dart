@@ -13,6 +13,7 @@ import '../../../data/backup.dart';
 import '../../../data/providers.dart';
 import '../../../data/supabase_backup_service.dart';
 import '../../../data/supabase_backup_settings.dart';
+import '../../../data/supabase_operation_status.dart';
 import '../../../data/supabase_sync_auth.dart';
 import '../../../data/supabase_table_sync_service.dart';
 import '../../../data/sync_models.dart';
@@ -48,8 +49,6 @@ class _MobileDataManagementScreenState
   bool _busy = false;
   SyncProgress? _syncProgress;
   _SyncMode _selectedMode = _SyncMode.local;
-  SupabaseBackupRemoteStatus? _remoteStatus;
-  String? _remoteStatusError;
   late final _supabaseUrlCtrl = TextEditingController();
   late final _supabaseAnonKeyCtrl = TextEditingController();
   late final _supabaseEmailCtrl = TextEditingController();
@@ -95,23 +94,26 @@ class _MobileDataManagementScreenState
 
   Future<void> _refreshSupabaseRemoteStatus() async {
     final draft = _supabaseDraft();
-    final error = validateSupabaseConnectionSettings(draft);
+    final error = validateSupabaseBackupSettings(draft);
     if (error != null) {
-      setState(() {
-        _remoteStatus = null;
-        _remoteStatusError = error;
-      });
+      await ref
+          .read(supabaseOperationStatusProvider.notifier)
+          .recordStorageFailure(error);
       return;
     }
 
     final result = await ref
         .read(supabaseBackupServiceProvider)
         .getRemoteStatus(draft);
-    if (!mounted) return;
-    setState(() {
-      _remoteStatus = result.value;
-      _remoteStatusError = result.error;
-    });
+    final statusNotifier = ref.read(supabaseOperationStatusProvider.notifier);
+    if (result.isOk) {
+      await statusNotifier.recordStorageCheck(
+        exists: result.value!.exists,
+        remoteUpdatedAt: result.value!.updatedAt,
+      );
+    } else {
+      await statusNotifier.recordStorageFailure(result.error!);
+    }
   }
 
   Future<void> _exportBackup() async {
@@ -207,6 +209,8 @@ class _MobileDataManagementScreenState
       _showSnack(error);
       return;
     }
+    final previous = ref.read(supabaseBackupSettingsProvider);
+    final statusNotifier = ref.read(supabaseOperationStatusProvider.notifier);
 
     setState(() {
       _busy = true;
@@ -216,6 +220,7 @@ class _MobileDataManagementScreenState
       );
     });
     try {
+      await statusNotifier.recordFullSyncStarted();
       await ref
           .read(supabaseSyncAuthServiceProvider)
           .signInWithPassword(
@@ -223,6 +228,7 @@ class _MobileDataManagementScreenState
             email: _supabaseEmailCtrl.text,
             password: _supabasePasswordCtrl.text,
           );
+      await _resetStatusForChangedIdentity(previous, draft);
       await ref.read(supabaseBackupSettingsProvider.notifier).save(draft);
       _supabasePasswordCtrl.clear();
       final syncResult = await ref
@@ -234,10 +240,13 @@ class _MobileDataManagementScreenState
       _showSnack(
         syncResult.isOk
             ? 'Supabase 연결 설정을 저장하고 동기화했습니다.'
-            : '설정은 저장했지만 동기화하지 못했습니다: ${syncResult.error}',
+            : '설정은 저장했지만 동기화하지 못했습니다: ${sanitizeSupabaseError(syncResult.error)}',
       );
     } catch (e) {
-      debugPrint('saveSupabaseSettings failed: $e');
+      await statusNotifier.recordFullSyncResult(
+        SyncRunResult(error: e.toString(), errorStage: 'auth'),
+      );
+      debugPrint('saveSupabaseSettings failed: ${sanitizeSupabaseError('$e')}');
       if (mounted) _showSnack('Supabase 설정 저장에 실패했습니다.');
     } finally {
       if (mounted) {
@@ -253,6 +262,56 @@ class _MobileDataManagementScreenState
     if (mounted) setState(() => _syncProgress = progress);
   }
 
+  Future<void> _resetStatusForChangedIdentity(
+    SupabaseBackupSettings previous,
+    SupabaseBackupSettings next,
+  ) async {
+    final oldValue = previous.normalized();
+    final newValue = next.normalized();
+    final notifier = ref.read(supabaseOperationStatusProvider.notifier);
+    if (oldValue.url != newValue.url ||
+        oldValue.anonKey != newValue.anonKey ||
+        oldValue.authEmail != newValue.authEmail) {
+      await notifier.resetDbStatus();
+    }
+    if (oldValue.url != newValue.url ||
+        oldValue.anonKey != newValue.anonKey ||
+        oldValue.bucket != newValue.bucket) {
+      await notifier.resetStorageStatus();
+    }
+  }
+
+  Future<void> _syncNow() async {
+    final draft = _supabaseDraft();
+    final error = validateSupabaseSyncSettings(draft);
+    if (error != null) {
+      _showSnack(error);
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _syncProgress = const SyncProgress(percent: 0, label: '동기화를 준비하고 있습니다.');
+    });
+    try {
+      final result = await ref
+          .read(supabaseSyncCoordinatorProvider)
+          .synchronizeNowWithProgress(_updateSyncProgress);
+      if (!mounted) return;
+      _showSnack(
+        result.isOk
+            ? '동기화했습니다. 업로드 ${result.uploaded}건, 다운로드 ${result.downloaded}건'
+            : '동기화하지 못했습니다: ${sanitizeSupabaseError(result.error)}',
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _syncProgress = null;
+        });
+      }
+    }
+  }
+
   Future<void> _testSupabaseSettings() async {
     final draft = _supabaseDraft();
     final error = validateSupabaseBackupSettings(draft);
@@ -266,8 +325,17 @@ class _MobileDataManagementScreenState
       final result = await ref
           .read(supabaseBackupServiceProvider)
           .testConnection(draft);
+      if (!result.isOk) {
+        await ref
+            .read(supabaseOperationStatusProvider.notifier)
+            .recordStorageFailure(result.error!);
+      }
       if (!mounted) return;
-      _showSnack(result.isOk ? 'Supabase Storage 연결을 확인했습니다.' : result.error!);
+      _showSnack(
+        result.isOk
+            ? 'Supabase Storage 연결을 확인했습니다.'
+            : sanitizeSupabaseError(result.error)!,
+      );
       if (result.isOk) await _refreshSupabaseRemoteStatus();
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -287,9 +355,19 @@ class _MobileDataManagementScreenState
       final result = await ref
           .read(supabaseTableSyncServiceProvider)
           .testConnection(draft);
+      final statusNotifier = ref.read(supabaseOperationStatusProvider.notifier);
+      if (result.isOk) {
+        await statusNotifier.recordDbConnectionSuccess(
+          result.value!.tables.length,
+        );
+      } else {
+        await statusNotifier.recordDbConnectionFailure(result.error!);
+      }
       if (!mounted) return;
       _showSnack(
-        result.isOk ? 'Supabase DB 엔티티 테이블 9개를 확인했습니다.' : result.error!,
+        result.isOk
+            ? 'Supabase DB 엔티티 테이블 ${result.value!.tables.length}개를 확인했습니다.'
+            : sanitizeSupabaseError(result.error)!,
       );
     } catch (error) {
       debugPrint('testSupabaseTables failed: $error');
@@ -304,12 +382,11 @@ class _MobileDataManagementScreenState
     try {
       await ref.read(supabaseSyncAuthServiceProvider).disconnect();
       await ref.read(supabaseBackupSettingsProvider.notifier).clear();
+      await ref.read(supabaseOperationStatusProvider.notifier).resetAll();
       if (!mounted) return;
       _fillSupabaseControllers(SupabaseBackupSettings.empty);
       setState(() {
         _selectedMode = _SyncMode.local;
-        _remoteStatus = null;
-        _remoteStatusError = null;
       });
       _showSnack('Supabase 연결 설정을 삭제했습니다.');
     } catch (e) {
@@ -330,6 +407,10 @@ class _MobileDataManagementScreenState
 
     setState(() => _busy = true);
     try {
+      await _resetStatusForChangedIdentity(
+        ref.read(supabaseBackupSettingsProvider),
+        draft,
+      );
       await ref.read(supabaseBackupSettingsProvider.notifier).save(draft);
       final backup = await ref.read(backupDaoProvider).exportBackup();
       final result = await ref
@@ -337,14 +418,20 @@ class _MobileDataManagementScreenState
           .uploadBackup(settings: draft, backup: backup);
       if (!mounted) return;
       if (!result.isOk) {
-        _showSnack(result.error!);
+        await ref
+            .read(supabaseOperationStatusProvider.notifier)
+            .recordStorageFailure(result.error!);
+        _showSnack(sanitizeSupabaseError(result.error)!);
         return;
       }
       await ref.read(supabaseBackupSettingsProvider.notifier).markBackupNow();
       await _refreshSupabaseRemoteStatus();
       _showSnack('Supabase에 백업했습니다.');
     } catch (e) {
-      debugPrint('uploadSupabaseBackup failed: $e');
+      await ref
+          .read(supabaseOperationStatusProvider.notifier)
+          .recordStorageFailure(e.toString());
+      debugPrint('uploadSupabaseBackup failed: ${sanitizeSupabaseError('$e')}');
       if (mounted) _showSnack('Supabase 백업에 실패했습니다.');
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -365,7 +452,10 @@ class _MobileDataManagementScreenState
           .read(supabaseBackupServiceProvider)
           .downloadLatestBackup(draft);
       if (!result.isOk) {
-        if (mounted) _showSnack(result.error!);
+        await ref
+            .read(supabaseOperationStatusProvider.notifier)
+            .recordStorageFailure(result.error!);
+        if (mounted) _showSnack(sanitizeSupabaseError(result.error)!);
         return;
       }
 
@@ -387,7 +477,12 @@ class _MobileDataManagementScreenState
       await _refreshSupabaseRemoteStatus();
       _showSnack('Supabase 백업을 복원했습니다.');
     } catch (e) {
-      debugPrint('restoreSupabaseBackup failed: $e');
+      await ref
+          .read(supabaseOperationStatusProvider.notifier)
+          .recordStorageFailure(e.toString());
+      debugPrint(
+        'restoreSupabaseBackup failed: ${sanitizeSupabaseError('$e')}',
+      );
       if (mounted) _showSnack('Supabase 복원에 실패했습니다.');
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -403,6 +498,7 @@ class _MobileDataManagementScreenState
   @override
   Widget build(BuildContext context) {
     final supabaseSettings = ref.watch(supabaseBackupSettingsProvider);
+    final operationStatus = ref.watch(supabaseOperationStatusProvider);
 
     return MobilePage(
       title: '데이터 관리',
@@ -449,8 +545,7 @@ class _MobileDataManagementScreenState
                   supabaseSettings.isConfigured ||
                   supabaseSettings.isTableSyncConfigured,
               settings: supabaseSettings,
-              remoteStatus: _remoteStatus,
-              remoteStatusError: _remoteStatusError,
+              operationStatus: operationStatus,
               busy: _busy,
               onSave: _saveSupabaseSettings,
               onTest: _testSupabaseSettings,
@@ -459,6 +554,7 @@ class _MobileDataManagementScreenState
               onUpload: _uploadSupabaseBackup,
               onRestore: _restoreSupabaseBackup,
               onRefresh: _refreshSupabaseRemoteStatus,
+              onSyncNow: _syncNow,
             ),
             _SyncMode.windows => const _WindowsDownloadPanel(
               key: ValueKey('mobile-settings-windows-download-panel'),
@@ -732,8 +828,7 @@ class _SupabaseSettingsCard extends StatelessWidget {
     required this.bucketController,
     required this.configured,
     required this.settings,
-    required this.remoteStatus,
-    required this.remoteStatusError,
+    required this.operationStatus,
     required this.busy,
     required this.onSave,
     required this.onTest,
@@ -742,6 +837,7 @@ class _SupabaseSettingsCard extends StatelessWidget {
     required this.onUpload,
     required this.onRestore,
     required this.onRefresh,
+    required this.onSyncNow,
   });
 
   final TextEditingController urlController;
@@ -751,8 +847,7 @@ class _SupabaseSettingsCard extends StatelessWidget {
   final TextEditingController bucketController;
   final bool configured;
   final SupabaseBackupSettings settings;
-  final SupabaseBackupRemoteStatus? remoteStatus;
-  final String? remoteStatusError;
+  final SupabaseOperationStatus operationStatus;
   final bool busy;
   final VoidCallback onSave;
   final VoidCallback onTest;
@@ -761,6 +856,7 @@ class _SupabaseSettingsCard extends StatelessWidget {
   final VoidCallback onUpload;
   final VoidCallback onRestore;
   final VoidCallback onRefresh;
+  final VoidCallback onSyncNow;
 
   @override
   Widget build(BuildContext context) {
@@ -786,7 +882,6 @@ class _SupabaseSettingsCard extends StatelessWidget {
                   ),
                 ),
               ),
-              _StatusChip(configured: configured),
             ],
           ),
           const SizedBox(height: 14),
@@ -797,11 +892,9 @@ class _SupabaseSettingsCard extends StatelessWidget {
             style: TextStyle(color: muted),
           ),
           const SizedBox(height: 12),
-          _SupabaseStatusPanel(
-            settings: settings,
-            remoteStatus: remoteStatus,
-            remoteStatusError: remoteStatusError,
-          ),
+          _AutoSyncStatusPanel(settings: settings, status: operationStatus),
+          const SizedBox(height: 12),
+          _JsonBackupStatusPanel(settings: settings, status: operationStatus),
           const SizedBox(height: 12),
           TextField(
             key: const ValueKey('mobile-settings-supabase-url-field'),
@@ -877,7 +970,7 @@ class _SupabaseSettingsCard extends StatelessWidget {
                 key: const ValueKey('mobile-settings-supabase-test-button'),
                 onPressed: busy ? null : onTest,
                 icon: const Icon(Icons.check_circle_outline),
-                label: const Text('연결 테스트'),
+                label: const Text('Storage 연결 테스트'),
               ),
               OutlinedButton.icon(
                 key: const ValueKey(
@@ -891,7 +984,13 @@ class _SupabaseSettingsCard extends StatelessWidget {
                 key: const ValueKey('mobile-settings-supabase-refresh-button'),
                 onPressed: busy ? null : onRefresh,
                 icon: const Icon(Icons.refresh),
-                label: const Text('상태 새로고침'),
+                label: const Text('백업 상태 확인'),
+              ),
+              FilledButton.icon(
+                key: const ValueKey('mobile-settings-supabase-sync-now-button'),
+                onPressed: busy ? null : onSyncNow,
+                icon: const Icon(Icons.sync),
+                label: const Text('지금 동기화'),
               ),
               OutlinedButton.icon(
                 key: const ValueKey('mobile-settings-supabase-clear-button'),
@@ -903,13 +1002,13 @@ class _SupabaseSettingsCard extends StatelessWidget {
                 key: const ValueKey('mobile-settings-supabase-upload-button'),
                 onPressed: busy ? null : onUpload,
                 icon: const Icon(Icons.cloud_upload_outlined),
-                label: const Text('Supabase 백업'),
+                label: const Text('JSON 백업 업로드'),
               ),
               FilledButton.icon(
                 key: const ValueKey('mobile-settings-supabase-restore-button'),
                 onPressed: busy ? null : onRestore,
                 icon: const Icon(Icons.cloud_download_outlined),
-                label: const Text('Supabase 복원'),
+                label: const Text('JSON 백업 복원'),
               ),
             ],
           ),
@@ -1249,57 +1348,125 @@ class _SqlCommandBlockState extends State<_SqlCommandBlock> {
   }
 }
 
-class _SupabaseStatusPanel extends StatelessWidget {
-  const _SupabaseStatusPanel({
-    required this.settings,
-    required this.remoteStatus,
-    required this.remoteStatusError,
-  });
+class _AutoSyncStatusPanel extends StatelessWidget {
+  const _AutoSyncStatusPanel({required this.settings, required this.status});
 
   final SupabaseBackupSettings settings;
-  final SupabaseBackupRemoteStatus? remoteStatus;
-  final String? remoteStatusError;
+  final SupabaseOperationStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final badge = _syncBadge(settings, status);
+    final lines = <String>[
+      '설정: ${settings.isTableSyncConfigured ? '완료' : '미설정'}',
+      '동작: 앱 시작·복귀 시 전체 동기화, 데이터 변경 시 자동 업로드',
+      '최근 전체 동기화: ${_syncResultLabel(status.fullSyncResult)}',
+      '실행 시각: ${_formatIso(status.fullSyncAttemptedAt)}',
+      '최근 성공: ${_formatIso(status.fullSyncSucceededAt)}',
+      '전송: 업로드 ${status.fullSyncUploaded}건 / 다운로드 ${status.fullSyncDownloaded}건',
+      '최근 자동 업로드: ${_syncResultLabel(status.autoUploadResult)}',
+      '자동 업로드 시각: ${_formatIso(status.autoUploadAttemptedAt)}',
+      '자동 업로드: ${status.autoUploadCount}건',
+      '업로드 대기: ${status.pendingUploadCount == null ? '집계되지 않음' : '${status.pendingUploadCount}건'}',
+      'DB 연결 확인: ${_dbConnectionLabel(status)}',
+    ];
+    final stage = [
+      status.fullSyncErrorTable,
+      status.fullSyncErrorStage,
+    ].whereType<String>().where((value) => value.isNotEmpty).join(' / ');
+    if (stage.isNotEmpty) lines.add('실패 단계: $stage');
+    if (status.fullSyncError != null) lines.add('오류: ${status.fullSyncError}');
+    if (status.autoUploadError != null) {
+      lines.add('자동 업로드 오류: ${status.autoUploadError}');
+    }
+    return _StatusPanel(
+      panelKey: const ValueKey('mobile-settings-supabase-status-panel'),
+      title: '자동 동기화',
+      badge: badge,
+      lines: lines,
+    );
+  }
+}
+
+class _JsonBackupStatusPanel extends StatelessWidget {
+  const _JsonBackupStatusPanel({required this.settings, required this.status});
+
+  final SupabaseBackupSettings settings;
+  final SupabaseOperationStatus status;
 
   @override
   Widget build(BuildContext context) {
     final lines = <String>[
-      'DB 동기화: ${settings.isTableSyncConfigured ? '설정됨' : '미설정'}',
-      'latest 경로: ${settings.normalized().pathPrefix}/latest.json',
-      '마지막 앱 백업: ${_formatIso(settings.lastBackupAt)}',
-      '마지막 앱 복원: ${_formatIso(settings.lastRestoreAt)}',
+      'Storage 설정: ${settings.isConfigured ? '사용 가능' : '미설정'}',
+      '파일: ${settings.normalized().pathPrefix}/latest.json',
+      '원격 백업: ${_storageResultLabel(status.storageCheckResult)}',
+      '상태 확인: ${_formatIso(status.storageCheckedAt)}',
+      '원격 수정: ${_formatIso(status.storageRemoteUpdatedAt)}',
+      '마지막 JSON 백업: ${_formatIso(settings.lastBackupAt)}',
+      '마지막 JSON 복원: ${_formatIso(settings.lastRestoreAt)}',
     ];
-    if (remoteStatusError != null) {
-      lines.add('원격 상태: $remoteStatusError');
-    } else if (remoteStatus == null) {
-      lines.add('원격 상태: 아직 확인하지 않았습니다.');
-    } else if (!remoteStatus!.exists) {
-      lines.add('원격 상태: latest.json 없음');
-    } else {
-      lines.add(
-        '원격 상태: latest.json 있음 ${_formatDate(remoteStatus!.updatedAt)}',
-      );
+    if (status.storageError != null) {
+      lines.add('Storage 오류: ${status.storageError}');
     }
-
-    return Container(
-      key: const ValueKey('mobile-settings-supabase-status-panel'),
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Theme.of(context).dividerColor),
-      ),
-      child: Text(
-        lines.join('\n'),
-        style: TextStyle(
-          color: Theme.of(
-            context,
-          ).colorScheme.onSurface.withValues(alpha: 0.75),
-          height: 1.4,
-        ),
-      ),
+    return _StatusPanel(
+      panelKey: const ValueKey('mobile-settings-json-backup-status-panel'),
+      title: 'JSON 백업 / 복원',
+      badge: _storageBadge(settings, status),
+      lines: lines,
     );
   }
+}
+
+class _StatusPanel extends StatelessWidget {
+  const _StatusPanel({
+    required this.panelKey,
+    required this.title,
+    required this.badge,
+    required this.lines,
+  });
+
+  final Key panelKey;
+  final String title;
+  final ({String label, _StatusTone tone}) badge;
+  final List<String> lines;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    key: panelKey,
+    width: double.infinity,
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: Theme.of(context).dividerColor),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+            ),
+            _StatusChip(label: badge.label, tone: badge.tone),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          lines.join('\n'),
+          style: TextStyle(
+            color: Theme.of(
+              context,
+            ).colorScheme.onSurface.withValues(alpha: 0.75),
+            height: 1.4,
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 String _formatIso(String? value) {
@@ -1315,16 +1482,25 @@ String _formatDate(DateTime? value) {
       '${two(local.hour)}:${two(local.minute)}';
 }
 
-class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.configured});
+enum _StatusTone { neutral, progress, success, warning, error }
 
-  final bool configured;
+class _StatusChip extends StatelessWidget {
+  const _StatusChip({required this.label, required this.tone});
+
+  final String label;
+  final _StatusTone tone;
 
   @override
   Widget build(BuildContext context) {
-    final color = configured
-        ? context.appIncome
-        : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.75);
+    final color = switch (tone) {
+      _StatusTone.success => context.appIncome,
+      _StatusTone.error => context.appExpense,
+      _StatusTone.progress => context.appAccent,
+      _StatusTone.warning => Theme.of(context).colorScheme.tertiary,
+      _StatusTone.neutral => Theme.of(
+        context,
+      ).colorScheme.onSurface.withValues(alpha: 0.75),
+    };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -1332,7 +1508,7 @@ class _StatusChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(
-        configured ? '설정됨' : '미설정',
+        label,
         style: TextStyle(
           fontSize: 12,
           fontWeight: FontWeight.w700,
@@ -1342,6 +1518,64 @@ class _StatusChip extends StatelessWidget {
     );
   }
 }
+
+({String label, _StatusTone tone}) _syncBadge(
+  SupabaseBackupSettings settings,
+  SupabaseOperationStatus status,
+) {
+  if (!settings.isTableSyncConfigured) {
+    return (label: '미설정', tone: _StatusTone.neutral);
+  }
+  return switch (status.fullSyncResult) {
+    SyncOperationResult.none => (label: '확인 전', tone: _StatusTone.neutral),
+    SyncOperationResult.running => (label: '동기화 중', tone: _StatusTone.progress),
+    SyncOperationResult.success => (label: '정상', tone: _StatusTone.success),
+    SyncOperationResult.authRequired => (
+      label: '로그인 필요',
+      tone: _StatusTone.warning,
+    ),
+    SyncOperationResult.failure => (label: '오류', tone: _StatusTone.error),
+  };
+}
+
+({String label, _StatusTone tone}) _storageBadge(
+  SupabaseBackupSettings settings,
+  SupabaseOperationStatus status,
+) {
+  if (!settings.isConfigured) {
+    return (label: '미설정', tone: _StatusTone.neutral);
+  }
+  return switch (status.storageCheckResult) {
+    StorageCheckResult.unknown => (label: '확인 전', tone: _StatusTone.neutral),
+    StorageCheckResult.exists => (label: '백업 있음', tone: _StatusTone.success),
+    StorageCheckResult.missing => (label: '백업 없음', tone: _StatusTone.warning),
+    StorageCheckResult.failure => (label: '연결 오류', tone: _StatusTone.error),
+  };
+}
+
+String _syncResultLabel(SyncOperationResult result) => switch (result) {
+  SyncOperationResult.none => '기록 없음',
+  SyncOperationResult.running => '실행 중',
+  SyncOperationResult.success => '성공',
+  SyncOperationResult.failure => '실패',
+  SyncOperationResult.authRequired => '로그인 필요',
+};
+
+String _dbConnectionLabel(
+  SupabaseOperationStatus status,
+) => switch (status.dbConnectionResult) {
+  DbConnectionResult.unknown => '확인 전',
+  DbConnectionResult.success =>
+    '정상 (${status.dbConnectionTableCount ?? 0}개, ${_formatIso(status.dbConnectionCheckedAt)})',
+  DbConnectionResult.failure => '오류 (${status.dbConnectionError ?? '원인 불명'})',
+};
+
+String _storageResultLabel(StorageCheckResult result) => switch (result) {
+  StorageCheckResult.unknown => '확인 전',
+  StorageCheckResult.exists => 'latest.json 있음',
+  StorageCheckResult.missing => 'latest.json 없음',
+  StorageCheckResult.failure => '확인 실패',
+};
 
 Future<bool?> _confirmReset(BuildContext context) {
   return showDialog<bool>(

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
@@ -15,6 +16,7 @@ import 'package:my_little_budget/data/supabase_backup_settings.dart';
 import 'package:my_little_budget/data/supabase_incremental_sync_service.dart';
 import 'package:my_little_budget/data/supabase_sync_auth.dart';
 import 'package:my_little_budget/data/supabase_sync_coordinator.dart';
+import 'package:my_little_budget/data/supabase_operation_status.dart';
 import 'package:my_little_budget/data/supabase_table_sync_service.dart';
 import 'package:my_little_budget/data/sync_models.dart';
 import 'package:my_little_budget/router/app_router.dart';
@@ -87,6 +89,14 @@ void main() {
     );
     expect(
       find.byKey(const ValueKey('mobile-settings-supabase-status-panel')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('mobile-settings-json-backup-status-panel')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('mobile-settings-supabase-sync-now-button')),
       findsOneWidget,
     );
   });
@@ -188,6 +198,14 @@ void main() {
 
     expect(
       find.byKey(const ValueKey('settings-supabase-table-test-button')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('settings-json-backup-status-panel')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('settings-supabase-sync-now-button')),
       findsOneWidget,
     );
     expect(
@@ -345,6 +363,64 @@ void main() {
 
     service.complete();
     await tester.pumpAndSettle();
+    expect(
+      find.textContaining('${supabaseSyncTableNames.length}개를 확인했습니다'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('Desktop separates persisted sync and JSON backup status', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      ..._configuredSupabasePrefs,
+      'mlb-supabase-operation-status-v1': jsonEncode(
+        const SupabaseOperationStatus(
+          fullSyncResult: SyncOperationResult.success,
+          fullSyncAttemptedAt: '2026-08-02T08:42:00Z',
+          fullSyncSucceededAt: '2026-08-02T08:42:01Z',
+          fullSyncUploaded: 2,
+          fullSyncDownloaded: 1,
+          autoUploadResult: SyncOperationResult.failure,
+          autoUploadAttemptedAt: '2026-08-02T08:45:00Z',
+          autoUploadError: 'network unavailable',
+          pendingUploadCount: 1,
+          storageCheckResult: StorageCheckResult.exists,
+          storageCheckedAt: '2026-08-02T08:46:00Z',
+        ).toJson(),
+      ),
+    });
+    await tester.binding.setSurfaceSize(const Size(1200, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final coordinator = _ProgressCoordinator(db)..complete();
+    addTearDown(coordinator.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appDatabaseProvider.overrideWithValue(db),
+          supabaseSyncCoordinatorProvider.overrideWithValue(coordinator),
+        ],
+        child: const MyLittleBudgetApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(MyLittleBudgetApp)),
+    );
+    container.read(appRouterProvider).go('/settings/backup');
+    await tester.pumpAndSettle();
+
+    expect(find.text('자동 동기화'), findsWidgets);
+    expect(find.text('정상'), findsOneWidget);
+    expect(find.text('JSON 백업 / 복원'), findsOneWidget);
+    expect(find.text('백업 있음'), findsOneWidget);
+    expect(
+      find.textContaining('자동 업로드 오류: network unavailable'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('Desktop shows percentage while settings save performs sync', (
