@@ -7,6 +7,8 @@
 -- so their existing rows can be transferred to the email user.
 --
 -- The app uses authenticated PostgREST requests only. Realtime is not enabled.
+-- Run this whole file once. It installs or migrates all sync tables, refreshes
+-- the PostgREST schema cache, and reports the installed/expected table count.
 
 begin;
 set transaction isolation level serializable;
@@ -330,3 +332,31 @@ end
 $schema_setup$;
 
 commit;
+
+-- PostgREST normally notices DDL automatically, but requesting a reload here
+-- makes this single script sufficient even when its schema cache is stale.
+notify pgrst, 'reload schema';
+
+-- A successful installation finishes with installed_table_count = 10 and
+-- expected_table_count = 10. No separate verification query is required.
+with expected(table_name) as (
+  values
+    ('mlb_accounts'),
+    ('mlb_categories'),
+    ('mlb_transactions'),
+    ('mlb_budget_groups'),
+    ('mlb_monthly_income'),
+    ('mlb_investments'),
+    ('mlb_recurring_transactions'),
+    ('mlb_transaction_presets'),
+    ('mlb_tags'),
+    ('mlb_calendar_events')
+)
+select
+  count(*) filter (
+    where pg_catalog.to_regclass(
+      pg_catalog.format('public.%I', table_name)
+    ) is not null
+  ) as installed_table_count,
+  count(*) as expected_table_count
+from expected;
