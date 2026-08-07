@@ -22,6 +22,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -119,7 +120,7 @@ class NoteAlarmPlaybackService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createChannel()
+        NoteAlarmChannel.ensureCreated(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -143,19 +144,28 @@ class NoteAlarmPlaybackService : Service() {
     private fun play(job: JSONObject) {
         stopPlayback(notifyScreen = false)
         alarmActive = true
+        val systemSettings = NoteAlarmChannel.playbackSettings(this)
+        val playback = NoteAlarmPlaybackPolicy.resolve(
+            systemSoundAllowed = systemSettings.soundAllowed,
+            systemVibrationAllowed = systemSettings.vibrationAllowed,
+            noteSoundAllowed = job.optBoolean("soundEnabled", true),
+            noteVibrationAllowed = job.optBoolean("vibrationEnabled", true),
+        )
         startForeground(NOTIFICATION_ID, notification(job))
         startedAt = System.currentTimeMillis()
         clipStart = job.optInt("clipStartMs", 0).coerceAtLeast(0)
         clipEnd = job.optInt("clipEndMs", -1).takeIf { it > clipStart }
-        player = createPlayer(this, job)?.also { media ->
-            media.setOnPreparedListener {
-                if (clipStart > 0) it.seekTo(clipStart)
-                it.start()
-                handler.post(progress)
+        if (playback.playSound) {
+            player = createPlayer(this, job)?.also { media ->
+                media.setOnPreparedListener {
+                    if (clipStart > 0) it.seekTo(clipStart)
+                    it.start()
+                    handler.post(progress)
+                }
+                media.prepareAsync()
             }
-            media.prepareAsync()
         }
-        if (job.optBoolean("vibrationEnabled", true)) startVibration()
+        if (playback.vibrate) startVibration()
         handler.postDelayed(timeout, 60_000L)
     }
 
@@ -231,7 +241,7 @@ class NoteAlarmPlaybackService : Service() {
                 ),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, NoteAlarmPlaybackPolicy.CHANNEL_ID)
             .setSmallIcon(com.my_little_budget.R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText("메모 알람이 울리고 있습니다.")
@@ -240,6 +250,7 @@ class NoteAlarmPlaybackService : Service() {
             .setAutoCancel(false)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setSilent(NoteAlarmPlaybackPolicy.NOTIFICATION_MUST_BE_SILENT)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setFullScreenIntent(alarmScreen, true)
             .addAction(0, "정지", stop)
@@ -247,16 +258,6 @@ class NoteAlarmPlaybackService : Service() {
             builder.addAction(0, "스누즈", snooze)
         }
         return builder.build()
-    }
-
-    private fun createChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val channel = NotificationChannel(CHANNEL_ID, "메모 알람", NotificationManager.IMPORTANCE_HIGH).apply {
-            description = "메모의 반복 음원 알람"
-            setSound(null, null)
-            enableVibration(false)
-        }
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun stopPlayback(notifyScreen: Boolean) {
@@ -285,9 +286,61 @@ class NoteAlarmPlaybackService : Service() {
         const val ACTION_STOP = "com.my_little_budget.STOP_NOTE_ALARM"
         const val ACTION_SNOOZE = "com.my_little_budget.SNOOZE_NOTE_ALARM"
         const val ACTION_FINISHED = "com.my_little_budget.NOTE_ALARM_FINISHED"
-        private const val CHANNEL_ID = "note_alarm_playback_v1"
         private const val NOTIFICATION_ID = 739999
         private const val FULL_SCREEN_REQUEST_CODE = 739998
+    }
+}
+
+internal object NoteAlarmChannel {
+    private val vibrationPattern = longArrayOf(0, 500, 350)
+
+    fun ensureCreated(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val legacy = manager.getNotificationChannel(NoteAlarmPlaybackPolicy.LEGACY_CHANNEL_ID)
+        if (manager.getNotificationChannel(NoteAlarmPlaybackPolicy.CHANNEL_ID) == null) {
+            val importance = legacy?.importance ?: NotificationManager.IMPORTANCE_HIGH
+            val soundAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            val channel = NotificationChannel(
+                NoteAlarmPlaybackPolicy.CHANNEL_ID,
+                "메모 알람",
+                importance,
+            ).apply {
+                description = "메모 알람의 소리와 진동 허용 여부"
+                setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), soundAttributes)
+                setVibrationPattern(vibrationPattern)
+                enableVibration(true)
+            }
+            manager.createNotificationChannel(channel)
+        }
+        if (legacy != null) {
+            manager.deleteNotificationChannel(NoteAlarmPlaybackPolicy.LEGACY_CHANNEL_ID)
+        }
+    }
+
+    fun playbackSettings(context: Context): NoteAlarmSystemPlaybackSettings {
+        val notificationsAllowed = NotificationManagerCompat.from(context).areNotificationsEnabled()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return NoteAlarmPlaybackPolicy.systemSettings(
+                notificationsAllowed = notificationsAllowed,
+                channelEnabled = true,
+                channelSoundAllowed = true,
+                channelVibrationAllowed = true,
+            )
+        }
+        val channel = context.getSystemService(NotificationManager::class.java)
+            .getNotificationChannel(NoteAlarmPlaybackPolicy.CHANNEL_ID)
+        return NoteAlarmPlaybackPolicy.systemSettings(
+            notificationsAllowed = notificationsAllowed,
+            channelEnabled = channel != null && channel.importance != NotificationManager.IMPORTANCE_NONE,
+            channelSoundAllowed = channel != null &&
+                channel.importance >= NotificationManager.IMPORTANCE_DEFAULT &&
+                channel.sound != null,
+            channelVibrationAllowed = channel?.shouldVibrate() == true,
+        )
     }
 }
 

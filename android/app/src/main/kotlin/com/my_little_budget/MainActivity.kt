@@ -20,6 +20,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        NoteAlarmChannel.ensureCreated(this)
         channel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "com.my_little_budget/note_alarms",
