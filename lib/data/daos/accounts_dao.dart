@@ -83,10 +83,27 @@ class AccountsDao extends DatabaseAccessor<AppDatabase>
         .get();
   }
 
-  /// 활성 자산 + 현재 잔액 (거래 합산 SQL + 투자 손익). SPEC §3.9.
-  Future<List<AccountBalance>> getAccountBalances() async {
+  /// 활성 자산 + 자산 현황 잔액 (거래 합산 SQL + 투자 손익). SPEC §3.9.
+  ///
+  /// 현금/은행은 [asOf] 당일까지, 카드는 [asOf]가 속한 달의 말일까지
+  /// 입력된 거래를 반영한다. 그 외 계좌 유형은 기존처럼 날짜 제한이 없다.
+  Future<List<AccountBalance>> getAccountBalances({DateTime? asOf}) async {
+    final localAsOf = asOf ?? DateTime.now();
+    final today = toDateKey(localAsOf);
+    final currentMonthEnd = monthRange(toMonthKey(localAsOf)).end;
     final rows = await customSelect(
       '''
+      WITH active_accounts AS (
+        SELECT
+          a.*,
+          CASE
+            WHEN a.kind = 'card' THEN ?
+            WHEN a.kind IN ('cash', 'bank') THEN ?
+            ELSE NULL
+          END AS balance_cutoff
+        FROM accounts a
+        WHERE a.archived_at IS NULL
+      )
       SELECT
         a.id AS id, a.name AS name, a.kind AS kind, a.color AS color,
         a.initial_balance AS initial_balance,
@@ -94,16 +111,16 @@ class AccountsDao extends DatabaseAccessor<AppDatabase>
         a.exclude_from_total AS exclude_from_total,
         a.is_investment AS is_investment,
         a.initial_balance
-        + COALESCE((SELECT SUM(amount) FROM transactions WHERE type = 'income'     AND account_id      = a.id), 0)
-        - COALESCE((SELECT SUM(amount) FROM transactions WHERE type = 'expense'    AND account_id      = a.id), 0)
-        + COALESCE((SELECT SUM(amount) FROM transactions WHERE type = 'transfer'   AND to_account_id   = a.id), 0)
-        - COALESCE((SELECT SUM(amount) FROM transactions WHERE type = 'transfer'   AND from_account_id = a.id), 0)
-        + COALESCE((SELECT SUM(amount) FROM transactions WHERE type = 'adjustment' AND account_id      = a.id), 0)
+        + COALESCE((SELECT SUM(amount) FROM transactions WHERE type = 'income'     AND account_id      = a.id AND (a.balance_cutoff IS NULL OR occurred_on <= a.balance_cutoff)), 0)
+        - COALESCE((SELECT SUM(amount) FROM transactions WHERE type = 'expense'    AND account_id      = a.id AND (a.balance_cutoff IS NULL OR occurred_on <= a.balance_cutoff)), 0)
+        + COALESCE((SELECT SUM(amount) FROM transactions WHERE type = 'transfer'   AND to_account_id   = a.id AND (a.balance_cutoff IS NULL OR occurred_on <= a.balance_cutoff)), 0)
+        - COALESCE((SELECT SUM(amount) FROM transactions WHERE type = 'transfer'   AND from_account_id = a.id AND (a.balance_cutoff IS NULL OR occurred_on <= a.balance_cutoff)), 0)
+        + COALESCE((SELECT SUM(amount) FROM transactions WHERE type = 'adjustment' AND account_id      = a.id AND (a.balance_cutoff IS NULL OR occurred_on <= a.balance_cutoff)), 0)
         AS balance
-      FROM accounts a
-      WHERE a.archived_at IS NULL
+      FROM active_accounts a
       ORDER BY a.sort_order, a.id
       ''',
+      variables: [Variable<String>(currentMonthEnd), Variable<String>(today)],
       readsFrom: {accounts, transactions},
     ).get();
 

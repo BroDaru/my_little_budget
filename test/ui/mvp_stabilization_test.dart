@@ -113,8 +113,109 @@ void main() {
       expect(find.textContaining('0.2222'), findsAtLeastNWidgets(2));
       expect(find.byIcon(Icons.north_east), findsWidgets);
       expect(find.byIcon(Icons.payments_outlined), findsWidgets);
+      final inlineSellTotal = find.byKey(
+        const ValueKey('holding-sell-total-amount-field'),
+      );
+      expect(inlineSellTotal, findsOneWidget);
+      expect(
+        tester.widget<TextField>(inlineSellTotal).decoration?.labelText,
+        '매도 총액',
+      );
     },
   );
+
+  testWidgets(
+    'Desktop investment buy and sell use quantity with direct total amount',
+    (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final seeded = await _seedInvestments(db);
+
+      await tester.binding.setSurfaceSize(const Size(1400, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appDatabaseProvider.overrideWithValue(db)],
+          child: const MyLittleBudgetApp(),
+        ),
+      );
+      await tester.pumpAndSettle();
+      GoRouter.of(
+        tester.element(find.text('my_little_budget')),
+      ).go('/investments');
+      await tester.pumpAndSettle();
+
+      await _openInvestmentEdit(tester, seeded.buyId);
+      expect(
+        find.byKey(const ValueKey('investment-unit-price-field')),
+        findsNothing,
+      );
+      final buyTotal = find.byKey(
+        const ValueKey('investment-total-amount-field'),
+      );
+      expect(buyTotal, findsOneWidget);
+      expect(tester.widget<TextField>(buyTotal).controller?.text, '30000');
+      expect(tester.widget<TextField>(buyTotal).decoration?.labelText, '구매 총액');
+      await tester.tap(find.byKey(const ValueKey('investment-save-button')));
+      await tester.pumpAndSettle();
+      expect(
+        (await db.investmentsDao.getInvestmentById(seeded.buyId))?.totalAmount,
+        30000,
+      );
+
+      await _openInvestmentEdit(tester, seeded.sellId);
+      final sellTotal = find.byKey(
+        const ValueKey('investment-total-amount-field'),
+      );
+      expect(sellTotal, findsOneWidget);
+      expect(tester.widget<TextField>(sellTotal).controller?.text, '15000');
+      expect(
+        tester.widget<TextField>(sellTotal).decoration?.labelText,
+        '매도 총액',
+      );
+    },
+  );
+
+  testWidgets('Desktop holding actions include prefilled add buy', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    await _seedInvestments(db);
+
+    await tester.binding.setSurfaceSize(const Size(1400, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appDatabaseProvider.overrideWithValue(db)],
+        child: const MyLittleBudgetApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+    GoRouter.of(
+      tester.element(find.text('my_little_budget')),
+    ).go('/investments');
+    await tester.pumpAndSettle();
+
+    final ticker = find.text('ABCD').first;
+    await tester.ensureVisible(ticker);
+    await tester.tap(ticker);
+    await tester.pumpAndSettle();
+
+    final addBuy = find.byKey(const ValueKey('holding-add-buy-ABCD'));
+    expect(addBuy, findsOneWidget);
+    await tester.tap(addBuy);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('investment-dialog')), findsOneWidget);
+    final tickerField = find.byKey(const ValueKey('investment-name-field'));
+    expect(tester.widget<TextField>(tickerField).controller?.text, 'ABCD');
+    expect(tester.widget<TextField>(tickerField).enabled, isFalse);
+    expect(
+      find.byKey(const ValueKey('investment-total-amount-field')),
+      findsOneWidget,
+    );
+  });
 
   testWidgets('Desktop investments switches from monthly to yearly data', (
     tester,
@@ -341,7 +442,7 @@ void main() {
     await _openInvestmentEdit(tester, seeded.sellId);
     expect(find.text('SELL'), findsWidgets);
     expect(find.widgetWithText(TextField, '0.1111'), findsOneWidget);
-    expect(find.widgetWithText(TextField, '135014'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '15000'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('investment-cancel-button')));
     await tester.pumpAndSettle();
 
