@@ -541,28 +541,18 @@ class _AccountSheetState extends ConsumerState<_AccountSheet> {
             ),
             const SizedBox(height: 12),
             if (_kind == 'card') ...[
-              TextField(
+              MobileAmountField(
                 controller: _cardLimit,
                 enabled: !_busy,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: '카드 한도',
-                  suffixText: '원',
-                  helperText: '현재 카드 부채가 한도의 80% 이상이면 경고합니다.',
-                  border: OutlineInputBorder(),
-                ),
+                label: '카드 한도',
+                helperText: '현재 카드 부채가 한도의 80% 이상이면 경고합니다.',
               ),
               const SizedBox(height: 12),
             ],
-            TextField(
+            MobileAmountField(
               controller: _balance,
               enabled: !_busy,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '현재 금액',
-                suffixText: '원',
-                border: OutlineInputBorder(),
-              ),
+              label: '현재 금액',
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,

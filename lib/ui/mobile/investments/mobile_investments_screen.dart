@@ -1174,16 +1174,7 @@ class _InvestmentSheetState extends ConsumerState<_InvestmentSheet> {
               ),
             ],
             const SizedBox(height: 12),
-            TextField(
-              controller: _amount,
-              enabled: !_busy,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '금액',
-                suffixText: '원',
-                border: OutlineInputBorder(),
-              ),
-            ),
+            MobileAmountField(controller: _amount, enabled: !_busy),
             const SizedBox(height: 12),
             TextField(
               controller: _memo,

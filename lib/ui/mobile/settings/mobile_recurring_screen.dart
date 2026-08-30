@@ -297,16 +297,7 @@ class _RecurringSheetState extends ConsumerState<_RecurringSheet> {
                     }),
             ),
             const SizedBox(height: 12),
-            TextField(
-              controller: _amount,
-              enabled: !_busy,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '금액',
-                suffixText: '원',
-                border: OutlineInputBorder(),
-              ),
-            ),
+            MobileAmountField(controller: _amount, enabled: !_busy),
             const SizedBox(height: 12),
             if (_type == 'transfer') ...[
               _AccountField(

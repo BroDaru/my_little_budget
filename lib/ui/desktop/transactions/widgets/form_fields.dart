@@ -80,6 +80,19 @@ class _AccountDropdownState extends State<AccountDropdown> {
   Iterable<Account> _matches(String raw) {
     final query = raw.trim().toLowerCase();
     if (query.isEmpty) return widget.accounts;
+    final matching = <Account>[];
+    final remaining = <Account>[];
+    for (final account in widget.accounts) {
+      (account.name.toLowerCase().contains(query) ? matching : remaining).add(
+        account,
+      );
+    }
+    return [...matching, ...remaining];
+  }
+
+  Iterable<Account> _matchingOnly(String raw) {
+    final query = raw.trim().toLowerCase();
+    if (query.isEmpty) return widget.accounts;
     return widget.accounts.where(
       (account) => account.name.toLowerCase().contains(query),
     );
@@ -107,7 +120,7 @@ class _AccountDropdownState extends State<AccountDropdown> {
       }
     }
 
-    final first = _matches(query).cast<Account?>().firstOrNull;
+    final first = _matchingOnly(query).cast<Account?>().firstOrNull;
     if (first == null) return false;
     _select(first);
     return true;
@@ -228,6 +241,19 @@ class _CategoryDropdownState extends State<CategoryDropdown> {
   Iterable<Category> _matches(String raw) {
     final query = raw.trim().toLowerCase();
     if (query.isEmpty) return widget.categories;
+    final matching = <Category>[];
+    final remaining = <Category>[];
+    for (final category in widget.categories) {
+      (category.name.toLowerCase().contains(query) ? matching : remaining).add(
+        category,
+      );
+    }
+    return [...matching, ...remaining];
+  }
+
+  Iterable<Category> _matchingOnly(String raw) {
+    final query = raw.trim().toLowerCase();
+    if (query.isEmpty) return widget.categories;
     return widget.categories.where(
       (category) => category.name.toLowerCase().contains(query),
     );
@@ -255,7 +281,7 @@ class _CategoryDropdownState extends State<CategoryDropdown> {
       }
     }
 
-    final first = _matches(query).cast<Category?>().firstOrNull;
+    final first = _matchingOnly(query).cast<Category?>().firstOrNull;
     if (first == null) return false;
     _select(first);
     return true;

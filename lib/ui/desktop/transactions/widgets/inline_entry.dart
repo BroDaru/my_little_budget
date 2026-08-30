@@ -4,11 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/date.dart';
 import '../../../../core/money.dart';
 import '../../../../core/theme/app_theme.dart';
-import '../../../../data/daos/transactions_dao.dart';
 import '../../../../data/providers.dart';
 import '../../../../features/transactions/validation.dart';
 import '../../../../features/presets/validation.dart';
 import 'package:my_little_budget/features/transactions/providers.dart';
+import '../../../shared/spending_limit_warning.dart';
 import 'form_fields.dart';
 
 class InlineEntry extends ConsumerStatefulWidget {
@@ -315,9 +315,16 @@ class _InlineEntryState extends ConsumerState<InlineEntry> {
       final warning = await ref
           .read(transactionsDaoProvider)
           .cardLimitWarningFor(result.value!);
+      final budgetWarnings = await ref
+          .read(budgetDaoProvider)
+          .budgetLimitWarningsFor(result.value!);
       refreshTransactions(ref);
       if (!mounted) return true;
-      _showCardLimitWarning(context, warning);
+      showSpendingLimitWarnings(
+        context,
+        cardWarning: warning,
+        budgetWarnings: budgetWarnings,
+      );
       setState(() {
         _amountCtrl.clear();
         _memoCtrl.clear();
@@ -598,17 +605,4 @@ class _InlineEntryState extends ConsumerState<InlineEntry> {
       ),
     );
   }
-}
-
-void _showCardLimitWarning(BuildContext context, CardLimitWarning? warning) {
-  if (warning == null) return;
-  final message = warning.exceeded
-      ? '${warning.accountName} 한도를 ${formatKRW(-warning.remaining)} 초과했습니다.'
-      : '${warning.accountName} 한도까지 ${formatKRW(warning.remaining)} 남았습니다.';
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(message),
-      backgroundColor: Theme.of(context).colorScheme.error,
-    ),
-  );
 }

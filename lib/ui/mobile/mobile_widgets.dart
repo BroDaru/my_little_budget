@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/date.dart';
+import '../../core/money.dart';
 import '../../core/theme/app_theme.dart';
 
 double mobileBottomPadding(BuildContext context, {double spacing = 0}) {
@@ -354,4 +355,361 @@ class EmptyMobileCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class MobileAmountField extends StatelessWidget {
+  const MobileAmountField({
+    super.key,
+    required this.controller,
+    this.fieldKey,
+    this.enabled = true,
+    this.label = '금액',
+    this.suffixText = '원',
+    this.helperText,
+    this.onCompleted,
+  });
+
+  final TextEditingController controller;
+  final Key? fieldKey;
+  final bool enabled;
+  final String label;
+  final String? suffixText;
+  final String? helperText;
+  final VoidCallback? onCompleted;
+
+  Future<void> _openCalculator(BuildContext context) async {
+    FocusScope.of(context).unfocus();
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => _MobileAmountCalculatorPage(
+          initialValue: controller.text,
+          title: label,
+        ),
+      ),
+    );
+    if (!context.mounted || result == null) return;
+    controller.value = TextEditingValue(
+      text: result,
+      selection: TextSelection.collapsed(offset: result.length),
+    );
+    onCompleted?.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      key: fieldKey,
+      controller: controller,
+      enabled: enabled,
+      readOnly: true,
+      showCursor: false,
+      keyboardType: TextInputType.none,
+      onTap: enabled ? () => _openCalculator(context) : null,
+      decoration: InputDecoration(
+        labelText: label,
+        suffixText: suffixText,
+        helperText: helperText,
+        border: const OutlineInputBorder(),
+      ),
+    );
+  }
+}
+
+class _MobileAmountCalculatorPage extends StatefulWidget {
+  const _MobileAmountCalculatorPage({
+    required this.initialValue,
+    required this.title,
+  });
+
+  final String initialValue;
+  final String title;
+
+  @override
+  State<_MobileAmountCalculatorPage> createState() =>
+      _MobileAmountCalculatorPageState();
+}
+
+class _MobileAmountCalculatorPageState
+    extends State<_MobileAmountCalculatorPage> {
+  late final _controller = TextEditingController(text: widget.initialValue);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _complete() {
+    final text = _controller.text.trim();
+    if (text.isNotEmpty) {
+      final result = parseKRW(text).toString();
+      _controller.value = TextEditingValue(
+        text: result,
+        selection: TextSelection.collapsed(offset: result.length),
+      );
+    }
+    Navigator.pop(context, _controller.text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      key: const ValueKey('mobile-transaction-amount-calculator-page'),
+      appBar: AppBar(
+        title: Text(widget.title),
+        leading: IconButton(
+          onPressed: () => Navigator.pop(context),
+          icon: const Icon(Icons.close),
+          tooltip: '닫기',
+        ),
+      ),
+      body: KeyedSubtree(
+        key: const ValueKey('mobile-amount-calculator-page'),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+            child: Column(
+              children: [
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.bottomRight,
+                    child: ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _controller,
+                      builder: (context, value, _) {
+                        final display = value.text.isEmpty ? '0' : value.text;
+                        return Text(
+                          display,
+                          key: const ValueKey(
+                            'mobile-transaction-calculator-display',
+                          ),
+                          textAlign: TextAlign.right,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.displayMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                _MobileAmountKeypad(controller: _controller, onDone: _complete),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MobileAmountKeypad extends StatelessWidget {
+  const _MobileAmountKeypad({required this.controller, required this.onDone});
+
+  final TextEditingController controller;
+  final VoidCallback onDone;
+
+  static const _rows = [
+    [
+      _MobileAmountKey('C', _MobileAmountKeyAction.clear),
+      _MobileAmountKey('backspace', _MobileAmountKeyAction.backspace),
+      _MobileAmountKey('()', _MobileAmountKeyAction.parentheses),
+      _MobileAmountKey('÷', _MobileAmountKeyAction.input),
+    ],
+    [
+      _MobileAmountKey('7', _MobileAmountKeyAction.input),
+      _MobileAmountKey('8', _MobileAmountKeyAction.input),
+      _MobileAmountKey('9', _MobileAmountKeyAction.input),
+      _MobileAmountKey('×', _MobileAmountKeyAction.input),
+    ],
+    [
+      _MobileAmountKey('4', _MobileAmountKeyAction.input),
+      _MobileAmountKey('5', _MobileAmountKeyAction.input),
+      _MobileAmountKey('6', _MobileAmountKeyAction.input),
+      _MobileAmountKey('-', _MobileAmountKeyAction.input),
+    ],
+    [
+      _MobileAmountKey('1', _MobileAmountKeyAction.input),
+      _MobileAmountKey('2', _MobileAmountKeyAction.input),
+      _MobileAmountKey('3', _MobileAmountKeyAction.input),
+      _MobileAmountKey('+', _MobileAmountKeyAction.input),
+    ],
+    [
+      _MobileAmountKey('00', _MobileAmountKeyAction.input),
+      _MobileAmountKey('0', _MobileAmountKeyAction.input),
+      _MobileAmountKey('.', _MobileAmountKeyAction.input),
+      _MobileAmountKey('=', _MobileAmountKeyAction.done),
+    ],
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      key: const ValueKey('mobile-transaction-amount-keypad'),
+      color: Colors.transparent,
+      child: Column(
+        children: [
+          for (final row in _rows)
+            Row(
+              children: [
+                for (final key in row)
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: _MobileAmountKeyButton(
+                        item: key,
+                        onPressed: () => _handle(key),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _handle(_MobileAmountKey key) {
+    switch (key.action) {
+      case _MobileAmountKeyAction.input:
+        _insert(key.label);
+      case _MobileAmountKeyAction.parentheses:
+        _insert(_nextParenthesis());
+      case _MobileAmountKeyAction.clear:
+        controller.clear();
+      case _MobileAmountKeyAction.backspace:
+        _backspace();
+      case _MobileAmountKeyAction.done:
+        final text = controller.text.trim();
+        if (text.isNotEmpty) _replaceAll(parseKRW(text).toString());
+        onDone();
+    }
+  }
+
+  void _insert(String value) {
+    final current = controller.value;
+    final selection = current.selection;
+    final text = current.text;
+    final start = selection.isValid ? selection.start : text.length;
+    final end = selection.isValid ? selection.end : text.length;
+    final normalizedStart = start.clamp(0, text.length).toInt();
+    final normalizedEnd = end.clamp(0, text.length).toInt();
+    final nextText = text.replaceRange(normalizedStart, normalizedEnd, value);
+    controller.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(
+        offset: normalizedStart + value.length,
+      ),
+    );
+  }
+
+  void _backspace() {
+    final current = controller.value;
+    final selection = current.selection;
+    final text = current.text;
+    if (text.isEmpty) return;
+    if (selection.isValid && !selection.isCollapsed) {
+      final start = selection.start.clamp(0, text.length).toInt();
+      final end = selection.end.clamp(0, text.length).toInt();
+      controller.value = TextEditingValue(
+        text: text.replaceRange(start, end, ''),
+        selection: TextSelection.collapsed(offset: start),
+      );
+      return;
+    }
+
+    final cursor = selection.isValid ? selection.start : text.length;
+    final offset = cursor.clamp(0, text.length).toInt();
+    if (offset == 0) return;
+    controller.value = TextEditingValue(
+      text: text.replaceRange(offset - 1, offset, ''),
+      selection: TextSelection.collapsed(offset: offset - 1),
+    );
+  }
+
+  String _nextParenthesis() {
+    final selection = controller.selection;
+    final text = controller.text;
+    final cursor = selection.isValid
+        ? selection.start.clamp(0, text.length).toInt()
+        : text.length;
+    final beforeCursor = text.substring(0, cursor);
+    final openCount = '('.allMatches(beforeCursor).length;
+    final closeCount = ')'.allMatches(beforeCursor).length;
+    return openCount > closeCount ? ')' : '(';
+  }
+
+  void _replaceAll(String text) {
+    controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
+}
+
+class _MobileAmountKeyButton extends StatelessWidget {
+  const _MobileAmountKeyButton({required this.item, required this.onPressed});
+
+  final _MobileAmountKey item;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isAction = item.action != _MobileAmountKeyAction.input;
+    final isDone = item.action == _MobileAmountKeyAction.done;
+    final foreground = isDone
+        ? theme.colorScheme.onPrimary
+        : item.action == _MobileAmountKeyAction.clear ||
+              item.action == _MobileAmountKeyAction.backspace
+        ? context.appExpense
+        : theme.colorScheme.onSurface;
+    final background = isDone
+        ? theme.colorScheme.primary
+        : isAction ||
+              item.label == '+' ||
+              item.label == '-' ||
+              item.label == '×' ||
+              item.label == '÷'
+        ? theme.colorScheme.surfaceContainerHighest
+        : theme.colorScheme.surface;
+
+    return SizedBox(
+      height: 54,
+      child: FilledButton(
+        key: ValueKey('mobile-transaction-keypad-${item.label}'),
+        onPressed: onPressed,
+        style: FilledButton.styleFrom(
+          elevation: 0,
+          backgroundColor: background,
+          foregroundColor: foreground,
+          padding: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(999),
+          ),
+        ),
+        child: item.action == _MobileAmountKeyAction.backspace
+            ? const Icon(Icons.backspace_outlined, size: 24)
+            : Text(
+                item.label,
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+      ),
+    );
+  }
+}
+
+enum _MobileAmountKeyAction { input, parentheses, clear, backspace, done }
+
+class _MobileAmountKey {
+  const _MobileAmountKey(this.label, this.action);
+
+  final String label;
+  final _MobileAmountKeyAction action;
 }

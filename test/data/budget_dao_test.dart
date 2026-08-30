@@ -48,6 +48,64 @@ void main() {
       expect(result.first.usagePercent, 50);
     });
 
+    test('거래 저장 후 예산 80% 도달과 초과를 경고한다', () async {
+      final accId = await firstAccount();
+      final catId = await expenseCat();
+      await db.budgetDao.createBudgetGroup(
+        name: '식비',
+        month: '2025-05',
+        amount: 100000,
+        categoryIds: [catId],
+      );
+
+      final belowThreshold = TransactionDraft(
+        type: 'expense',
+        amount: 79999,
+        occurredOn: '2025-05-03',
+        occurredTime: '00:00',
+        accountId: accId,
+        categoryId: catId,
+      );
+      await db.transactionsDao.saveTransaction(draft: belowThreshold);
+      expect(
+        await db.budgetDao.budgetLimitWarningsFor(belowThreshold),
+        isEmpty,
+      );
+
+      final reachesThreshold = TransactionDraft(
+        type: 'expense',
+        amount: 1,
+        occurredOn: '2025-05-04',
+        occurredTime: '00:00',
+        accountId: accId,
+        categoryId: catId,
+      );
+      await db.transactionsDao.saveTransaction(draft: reachesThreshold);
+      final warning = (await db.budgetDao.budgetLimitWarningsFor(
+        reachesThreshold,
+      )).single;
+      expect(warning.groupName, '식비');
+      expect(warning.budgetAmount, 100000);
+      expect(warning.spentAmount, 80000);
+      expect(warning.remaining, 20000);
+      expect(warning.exceeded, isFalse);
+
+      final exceedsBudget = TransactionDraft(
+        type: 'expense',
+        amount: 25000,
+        occurredOn: '2025-05-05',
+        occurredTime: '00:00',
+        accountId: accId,
+        categoryId: catId,
+      );
+      await db.transactionsDao.saveTransaction(draft: exceedsBudget);
+      final exceeded = (await db.budgetDao.budgetLimitWarningsFor(
+        exceedsBudget,
+      )).single;
+      expect(exceeded.remaining, -5000);
+      expect(exceeded.exceeded, isTrue);
+    });
+
     test('% 모드: base = 예상소득 × % / 100', () async {
       await db.budgetDao.setMonthlyExpectedIncome('2025-05', 3000000);
       final catId = await expenseCat();
@@ -169,6 +227,47 @@ void main() {
       expect(result.first.accountId, accId);
       expect(result.first.spentAmount, 40000);
       expect(result.first.budgetAmount, 0); // 월초 0 + 입금 0
+    });
+
+    test('자산 연동 예산도 80% 도달 경고에 포함한다', () async {
+      final accId = await firstAccount();
+      final expenseCatId = await expenseCat();
+      final incomeCatId = (await db.categoriesDao.getActiveCategories(
+        'income',
+      )).first.id;
+      await db.transactionsDao.saveTransaction(
+        draft: TransactionDraft(
+          type: 'income',
+          amount: 100000,
+          occurredOn: '2025-05-01',
+          occurredTime: '00:00',
+          accountId: accId,
+          categoryId: incomeCatId,
+        ),
+      );
+      await db.budgetDao.createBudgetGroup(
+        name: '생활비계좌',
+        month: '2025-05',
+        amount: 0,
+        accountId: accId,
+      );
+      final expense = TransactionDraft(
+        type: 'expense',
+        amount: 80000,
+        occurredOn: '2025-05-05',
+        occurredTime: '00:00',
+        accountId: accId,
+        categoryId: expenseCatId,
+      );
+      await db.transactionsDao.saveTransaction(draft: expense);
+
+      final warning = (await db.budgetDao.budgetLimitWarningsFor(
+        expense,
+      )).single;
+      expect(warning.groupName, '생활비계좌');
+      expect(warning.budgetAmount, 100000);
+      expect(warning.spentAmount, 80000);
+      expect(warning.remaining, 20000);
     });
 
     test('account-linked group account can be changed', () async {

@@ -612,14 +612,10 @@ class _MobileAdjustmentSheetState
               label: Text(toDateKey(_date)),
             ),
             const SizedBox(height: 12),
-            TextField(
+            MobileAmountField(
               controller: _amount,
               enabled: !_busy,
-              keyboardType: const TextInputType.numberWithOptions(signed: true),
-              decoration: const InputDecoration(
-                labelText: '금액',
-                border: OutlineInputBorder(),
-              ),
+              suffixText: null,
             ),
             const SizedBox(height: 12),
             TextField(

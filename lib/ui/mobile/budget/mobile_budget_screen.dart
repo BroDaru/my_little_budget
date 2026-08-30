@@ -479,26 +479,16 @@ class _BudgetGroupSheetState extends ConsumerState<_BudgetGroupSheet> {
                   ),
                 )
               else
-                TextField(
+                MobileAmountField(
                   controller: _amount,
                   enabled: !_busy,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: '예산 금액',
-                    suffixText: '원',
-                    border: OutlineInputBorder(),
-                  ),
+                  label: '예산 금액',
                 ),
               const SizedBox(height: 12),
-              TextField(
+              MobileAmountField(
                 controller: _adjustment,
                 enabled: !_busy && _isEdit,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: '조정액',
-                  suffixText: '원',
-                  border: OutlineInputBorder(),
-                ),
+                label: '조정액',
               ),
               const SizedBox(height: 8),
               SwitchListTile(
@@ -714,15 +704,10 @@ class _ExpectedIncomeSheetState extends ConsumerState<_ExpectedIncomeSheet> {
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 16),
-          TextField(
+          MobileAmountField(
             controller: _income,
             enabled: !_busy,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: '예상 수입',
-              suffixText: '원',
-              border: OutlineInputBorder(),
-            ),
+            label: '예상 수입',
           ),
           const SizedBox(height: 16),
           FilledButton(

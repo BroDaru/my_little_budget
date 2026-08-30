@@ -1,7 +1,9 @@
 import 'package:drift/drift.dart';
 
 import '../../core/date.dart';
+import '../../core/validation.dart';
 import '../../features/budget/logic.dart';
+import '../../features/transactions/validation.dart';
 import '../database.dart';
 import '../sync_metadata.dart';
 import '../tables/accounts.dart';
@@ -84,6 +86,26 @@ class BudgetVsActual {
   final String? accountName;
   final String? accountColor;
   final List<CategoryRef> categories;
+}
+
+class BudgetLimitWarning {
+  const BudgetLimitWarning({
+    required this.groupId,
+    required this.groupName,
+    required this.budgetAmount,
+    required this.spentAmount,
+    required this.remaining,
+    required this.thresholdPercent,
+  });
+
+  final int groupId;
+  final String groupName;
+  final int budgetAmount;
+  final int spentAmount;
+  final int remaining;
+  final int thresholdPercent;
+
+  bool get exceeded => remaining < 0;
 }
 
 @DriftAccessor(
@@ -373,6 +395,43 @@ class BudgetDao extends DatabaseAccessor<AppDatabase> with _$BudgetDaoMixin {
       );
     }
     return result;
+  }
+
+  Future<List<BudgetLimitWarning>> budgetLimitWarningsFor(
+    TransactionDraft draft, {
+    int thresholdPercent = 80,
+  }) async {
+    if (draft.type != 'expense' ||
+        !isDateKey(draft.occurredOn) ||
+        thresholdPercent < 1 ||
+        thresholdPercent > 100) {
+      return const [];
+    }
+
+    final month = draft.occurredOn.substring(0, 7);
+    final rows = await budgetGroupVsActual(month);
+    return [
+      for (final row in rows)
+        if (_isAffectedBudget(row, draft) &&
+            row.budgetAmount > 0 &&
+            row.spentAmount * 100 >= row.budgetAmount * thresholdPercent)
+          BudgetLimitWarning(
+            groupId: row.groupId,
+            groupName: row.groupName,
+            budgetAmount: row.budgetAmount,
+            spentAmount: row.spentAmount,
+            remaining: row.budgetAmount - row.spentAmount,
+            thresholdPercent: thresholdPercent,
+          ),
+    ];
+  }
+
+  bool _isAffectedBudget(BudgetVsActual row, TransactionDraft draft) {
+    final accountId = row.accountId;
+    if (accountId != null) return accountId == draft.accountId;
+    final categoryId = draft.categoryId;
+    return categoryId != null &&
+        row.categories.any((category) => category.id == categoryId);
   }
 
   /// SPEC §4.4 — 자산 연동 예산: 월초 잔액 + 월 입금/출금.

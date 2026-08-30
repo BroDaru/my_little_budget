@@ -8,6 +8,7 @@ import '../../../../data/database.dart';
 import '../../../../data/providers.dart';
 import '../../../../features/presets/validation.dart';
 import '../../../../features/settings/providers.dart';
+import '../../mobile_widgets.dart';
 
 class MobileTransactionPresetSheet extends ConsumerStatefulWidget {
   const MobileTransactionPresetSheet({super.key, this.item, this.source});
@@ -143,7 +144,7 @@ class _State extends ConsumerState<MobileTransactionPresetSheet> {
           const SizedBox(height: 12),
           _field(_name, '프리셋 이름(선택)'),
           const SizedBox(height: 12),
-          _field(_amount, '금액', number: true),
+          MobileAmountField(controller: _amount, enabled: !_busy),
           const SizedBox(height: 12),
           if (_type == 'transfer') ...[
             _accountDropdown('출금 자산', accounts, _fromAccountId, (value) {
@@ -190,13 +191,9 @@ class _State extends ConsumerState<MobileTransactionPresetSheet> {
     );
   }
 
-  Widget _field(
-    TextEditingController controller,
-    String label, {
-    bool number = false,
-  }) => TextField(
+  Widget _field(TextEditingController controller, String label) => TextField(
     controller: controller,
-    keyboardType: number ? TextInputType.number : TextInputType.text,
+    keyboardType: TextInputType.text,
     decoration: InputDecoration(
       labelText: label,
       border: const OutlineInputBorder(),
